@@ -7,11 +7,14 @@ import (
 	"os"
 
 	"go.opentelemetry.io/contrib/propagators/aws/xray"
-
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpgrpc"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/metric/aggregator/histogram"
+	controller "go.opentelemetry.io/otel/sdk/metric/controller/basic"
+	processor "go.opentelemetry.io/otel/sdk/metric/processor/basic"
+	"go.opentelemetry.io/otel/sdk/metric/selector/simple"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/semconv"
@@ -23,17 +26,28 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tracer, tracerShutdownFunc, err := newTracer(tracerConfig{
-		Ctx:           config.Ctx,
-		CollectorAddr: config.OtelCollectorAddr,
-		SvcName:       config.ServiceName,
-	})
-	defer tracerShutdownFunc()
+	teleConfig, err := newTelemetryConfig(config)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		err := teleConfig.Exporter.Shutdown(config.Ctx)
+		if err != nil {
+			log.Fatalf("failed to stop exporter: %v", err)
+		}
+	}()
+
+	tracer, err := newTracer(teleConfig)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	router := newRouter(config, tracer)
+	metricProcessor, err := newMetricProcessor(teleConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	router := newRouter(config, tracer, metricProcessor)
 
 	log.Println(config.ServiceName + " starting...")
 	if err := http.ListenAndServe(":8080", router); err != nil {
@@ -62,43 +76,47 @@ func newConfig() (Config, error) {
 	}, nil
 }
 
-func newHttpClient() http.Client {
-	return http.Client{
-		Transport: otelhttp.NewTransport(http.DefaultTransport),
-	}
+type telemetryConfig struct {
+	Ctx      context.Context
+	Exporter *otlp.Exporter
+	Resource *resource.Resource
+	SvcName  string
 }
 
-type tracerConfig struct {
-	Ctx           context.Context
-	CollectorAddr string
-	SvcName       string
-}
-
-func newTracer(config tracerConfig) (*sdktrace.TracerProvider, func(), error) {
-	exp, err := otlp.NewExporter(config.Ctx,
-		otlp.WithInsecure(),
-		otlp.WithAddress(config.CollectorAddr),
+func newTelemetryConfig(config Config) (telemetryConfig, error) {
+	driver := otlpgrpc.NewDriver(
+		otlpgrpc.WithInsecure(),
+		otlpgrpc.WithEndpoint(config.OtelCollectorAddr),
 	)
+
+	exp, err := otlp.NewExporter(config.Ctx, driver)
 	if err != nil {
-		return nil, nil, err
+		return telemetryConfig{}, err
 	}
 
 	res, err := resource.New(config.Ctx,
 		resource.WithAttributes(
 			// the service name used to display traces in backends
-			semconv.ServiceNameKey.String(config.SvcName),
+			semconv.ServiceNameKey.String(config.ServiceName),
 		),
 	)
 	if err != nil {
-		return nil, nil, err
+		return telemetryConfig{}, err
 	}
 
+	return telemetryConfig{
+		Ctx:      config.Ctx,
+		Exporter: exp,
+		Resource: res,
+	}, nil
+}
+
+func newTracer(config telemetryConfig) (*sdktrace.TracerProvider, error) {
 	idg := xray.NewIDGenerator()
-	bsp := sdktrace.NewBatchSpanProcessor(exp)
+	bsp := sdktrace.NewBatchSpanProcessor(config.Exporter)
 
 	tracerProvider := sdktrace.NewTracerProvider(
-		sdktrace.WithConfig(sdktrace.Config{DefaultSampler: sdktrace.AlwaysSample()}),
-		sdktrace.WithResource(res),
+		sdktrace.WithResource(config.Resource),
 		sdktrace.WithSpanProcessor(bsp),
 		sdktrace.WithIDGenerator(idg),
 	)
@@ -106,12 +124,27 @@ func newTracer(config tracerConfig) (*sdktrace.TracerProvider, func(), error) {
 	otel.SetTracerProvider(tracerProvider)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
-	shutdownFunc := func() {
-		err := exp.Shutdown(config.Ctx)
-		if err != nil {
-			log.Fatalf("failed to stop exporter: %v", err)
-		}
+	return tracerProvider, nil
+}
+
+func newMetricProcessor(config telemetryConfig) (*controller.Controller, error) {
+	cont := controller.New(
+		processor.New(
+			simple.NewWithHistogramDistribution(
+				histogram.WithExplicitBoundaries([]float64{
+					0.001, 0.01, 0.1, 1, 10, 100, 1000,
+				}),
+			),
+			config.Exporter,
+			processor.WithMemory(true),
+		),
+		controller.WithResource(config.Resource),
+		controller.WithExporter(config.Exporter),
+	)
+
+	if err := cont.Start(config.Ctx); err != nil {
+		return nil, err
 	}
 
-	return tracerProvider, shutdownFunc, nil
+	return cont, nil
 }

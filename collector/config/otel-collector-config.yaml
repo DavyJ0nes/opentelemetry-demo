@@ -4,14 +4,6 @@ receivers:
       grpc:
       http:
 
-  prometheus_simple/service-one:
-    collection_interval: 5s
-    endpoint: "service-one:8080"
-
-  prometheus_simple/service-two:
-    collection_interval: 5s
-    endpoint: "service-two:8080"
-
 exporters:
   logging:
     loglevel: debug
@@ -56,9 +48,9 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [zipkin, jaeger_thrift, awsxray, datadog]
+      exporters: [zipkin, jaeger_thrift]
 
     metrics:
-      receivers: [otlp, prometheus_simple/service-one, prometheus_simple/service-two]
+      receivers: [otlp]
       processors: [batch]
       exporters: [prometheus]

@@ -2,7 +2,7 @@ FROM alpine:latest as build
 
 WORKDIR /src
 RUN apk --update add ca-certificates
-RUN wget https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/download/v0.17.0/otelcontribcol_linux_amd64
+RUN wget https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/download/v0.24.0/otelcontribcol_linux_amd64
 RUN chmod +x ./otelcontribcol_linux_amd64
 
 FROM alpine:latest

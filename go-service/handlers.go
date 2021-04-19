@@ -1,11 +1,7 @@
 package main
 
 import (
-	"log"
 	"net/http"
-	"net/http/httptrace"
-
-	"go.opentelemetry.io/contrib/instrumentation/net/http/httptrace/otelhttptrace"
 )
 
 type index struct {
@@ -15,10 +11,7 @@ type index struct {
 }
 
 func (i index) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	log.Println("received request to index")
-
-	ctx := httptrace.WithClientTrace(req.Context(), otelhttptrace.NewClientTrace(req.Context()))
-	backendRequest, _ := http.NewRequestWithContext(ctx, "GET", i.dependantService, nil)
+	backendRequest, _ := http.NewRequestWithContext(req.Context(), "GET", i.dependantService, nil)
 
 	_, err := i.httpClient.Do(backendRequest)
 	if err != nil {
