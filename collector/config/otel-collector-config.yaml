@@ -1,0 +1,64 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+      http:
+
+  prometheus_simple/service-one:
+    collection_interval: 5s
+    endpoint: "service-one:8080"
+
+  prometheus_simple/service-two:
+    collection_interval: 5s
+    endpoint: "service-two:8080"
+
+exporters:
+  logging:
+    loglevel: debug
+
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    const_labels:
+      team: platform-services
+
+  zipkin:
+    endpoint: "http://zipkin-all-in-one:9411/api/v2/spans"
+
+  jaeger_thrift:
+    url: "http://jaeger:14268/api/traces"
+
+  awsxray:
+    region: 'eu-west-1'
+
+  datadog:
+    api:
+      key: ""
+      site: datadoghq.eu
+    env: dev
+
+    tags:
+      - user:davyj0nes
+
+extensions:
+  health_check:
+  pprof:
+    endpoint: :1888
+  zpages:
+    endpoint: :55679
+
+processors:
+  batch:
+    timeout: 10s
+
+service:
+  extensions: [pprof, zpages, health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [zipkin, jaeger_thrift, awsxray, datadog]
+
+    metrics:
+      receivers: [otlp, prometheus_simple/service-one, prometheus_simple/service-two]
+      processors: [batch]
+      exporters: [prometheus]
